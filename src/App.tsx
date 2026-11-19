@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import type { Session } from '@supabase/supabase-js';
 import {
   Archive,
   ArrowUpRight,
@@ -81,6 +82,13 @@ function statusClass(status: string) {
 }
 
 function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authMode, setAuthMode] = useState<'sign-in' | 'sign-up'>('sign-in');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authNotice, setAuthNotice] = useState('');
   const [tickets, setTickets] = useState<TicketRecord[]>([]);
   const [selectedTicket, setSelectedTicket] = useState<TicketRecord | null>(null);
   const [messages, setMessages] = useState<MessageRecord[]>([]);
@@ -103,6 +111,42 @@ function App() {
     priority: 'Medium',
   });
 
+  useEffect(() => {
+    let active = true;
+    void supabase.auth.getSession().then(({ data }) => {
+      if (active) {
+        setSession(data.session);
+        setAuthLoading(false);
+      }
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setAuthLoading(false);
+    });
+    return () => {
+      active = false;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  const handleAuth = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setAuthError('');
+    setAuthNotice('');
+    const result = authMode === 'sign-in'
+      ? await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword })
+      : await supabase.auth.signUp({ email: authEmail, password: authPassword });
+    if (result.error) {
+      setAuthError(result.error.message.includes('Invalid login credentials') ? 'That email or password is not correct.' : result.error.message);
+      return;
+    }
+    if (authMode === 'sign-up' && !result.data.session) {
+      setAuthNotice('Your account was created. Check your email to confirm it, then sign in.');
+      setAuthMode('sign-in');
+      setAuthPassword('');
+    }
+  };
+
   const loadTickets = async () => {
     setLoading(true);
     const { data, error } = await supabase.from('tickets').select('*').order('updated_at', { ascending: false });
@@ -116,8 +160,12 @@ function App() {
   };
 
   useEffect(() => {
+    if (!session) {
+      setLoading(false);
+      return;
+    }
     void loadTickets();
-  }, []);
+  }, [session]);
 
   useEffect(() => {
     const loadMessages = async () => {
@@ -191,6 +239,19 @@ function App() {
     setAssistantInput('');
   };
 
+  if (authLoading) {
+    return <div className="auth-loading"><div className="brand-mark"><Sparkles size={17} /></div><span>Loading secure workspace...</span></div>;
+  }
+
+  if (!session) {
+    return (
+      <div className="auth-shell">
+        <div className="auth-visual"><div className="auth-orbit orbit-one" /><div className="auth-orbit orbit-two" /><div className="auth-visual-content"><div className="brand-row auth-brand"><div className="brand-mark"><Sparkles size={17} /></div><div><strong>BizAssist</strong><span>Customer operations</span></div></div><div className="auth-quote"><span className="eyebrow accent">Support workspace</span><h1>Make every customer feel heard.</h1><p>Bring your team's conversations, context, and next best actions into one focused workspace.</p><div className="auth-proof"><div className="proof-icon"><Check size={16} /></div><span>Secure agent access powered by Supabase</span></div><div className="auth-proof"><div className="proof-icon"><Sparkles size={16} /></div><span>AI-assisted workflows with human approval</span></div></div></div></div>
+        <main className="auth-panel"><div className="auth-panel-inner"><div className="auth-mobile-brand"><div className="brand-mark"><Sparkles size={17} /></div><strong>BizAssist</strong></div><div className="auth-heading"><span className="eyebrow accent">Agent portal</span><h2>{authMode === 'sign-in' ? 'Welcome back' : 'Create your agent account'}</h2><p>{authMode === 'sign-in' ? 'Sign in to manage your support queue.' : 'Join your support workspace with your work email.'}</p></div>{authError && <div className="auth-message error"><CircleHelp size={16} />{authError}</div>}{authNotice && <div className="auth-message success"><Check size={16} />{authNotice}</div>}<form className="auth-form" onSubmit={handleAuth}><label>Email address<div className="auth-input"><UserRound size={16} /><input required type="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="you@company.com" autoComplete="email" /></div></label><label>Password<div className="auth-input"><span className="password-dot">•••</span><input required type="password" minLength={6} value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="At least 6 characters" autoComplete={authMode === 'sign-in' ? 'current-password' : 'new-password'} /></div></label><button className="primary-button auth-submit" type="submit">{authMode === 'sign-in' ? 'Sign in to workspace' : 'Create account'}<ArrowUpRight size={16} /></button></form><div className="auth-switch">{authMode === 'sign-in' ? <><span>New to BizAssist?</span><button onClick={() => { setAuthMode('sign-up'); setAuthError(''); setAuthNotice(''); }}>Create an account</button></> : <><span>Already have an account?</span><button onClick={() => { setAuthMode('sign-in'); setAuthError(''); setAuthNotice(''); }}>Sign in instead</button></>}</div><p className="auth-privacy"><Check size={13} /> Your workspace is protected with Supabase authentication.</p></div></main>
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       <aside className={`sidebar ${showMobileNav ? 'sidebar-open' : ''}`}>
@@ -209,11 +270,11 @@ function App() {
           <button className="nav-item"><Archive size={18} /><span>Reports</span></button>
           <button className="nav-item"><Settings size={18} /><span>Settings</span></button>
         </nav>
-        <div className="sidebar-bottom"><div className="upgrade-card"><div className="upgrade-icon"><Bot size={18} /></div><strong>AI copilot is active</strong><p>Use assistive suggestions to resolve tickets faster.</p><button>View capabilities <ArrowUpRight size={14} /></button></div><div className="profile-row"><div className="profile-avatar">JD</div><div><strong>Jordan Davis</strong><span>Administrator</span></div><MoreHorizontal size={18} /></div></div>
+        <div className="sidebar-bottom"><div className="upgrade-card"><div className="upgrade-icon"><Bot size={18} /></div><strong>AI copilot is active</strong><p>Use assistive suggestions to resolve tickets faster.</p><button>View capabilities <ArrowUpRight size={14} /></button></div><div className="profile-row"><div className="profile-avatar">{session.user.email?.slice(0, 2).toUpperCase() ?? 'AG'}</div><div><strong>{session.user.email?.split('@')[0] ?? 'Agent'}</strong><span>Authenticated agent</span></div><button className="icon-button" onClick={() => void supabase.auth.signOut()} aria-label="Sign out"><MoreHorizontal size={18} /></button></div></div>
       </aside>
 
       <main className="main-content">
-        <header className="topbar"><div className="topbar-left"><button className="icon-button menu-trigger" onClick={() => setShowMobileNav(true)} aria-label="Open menu"><Menu size={21} /></button><div><p className="eyebrow">Tuesday, November 18, 2026</p><h1>Good morning, Jordan <span>—</span></h1></div></div><div className="topbar-actions"><button className="icon-button" aria-label="Help"><CircleHelp size={19} /></button><button className="icon-button notification" aria-label="Notifications"><Bell size={19} /><i /></button><div className="top-avatar">JD</div></div></header>
+        <header className="topbar"><div className="topbar-left"><button className="icon-button menu-trigger" onClick={() => setShowMobileNav(true)} aria-label="Open menu"><Menu size={21} /></button><div><p className="eyebrow">Tuesday, November 18, 2026</p><h1>Good morning, Jordan <span>—</span></h1></div></div><div className="topbar-actions"><button className="icon-button" aria-label="Help"><CircleHelp size={19} /></button><button className="icon-button notification" aria-label="Notifications"><Bell size={19} /><i /></button><button className="top-avatar" onClick={() => void supabase.auth.signOut()} aria-label="Sign out">{session.user.email?.slice(0, 2).toUpperCase() ?? 'AG'}</button></div></header>
 
         <div className="page-wrap">
           {notice && <div className="notice"><Check size={16} />{notice}</div>}

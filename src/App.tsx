@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { Session } from '@supabase/supabase-js';
+import { useChat } from '@ai-sdk/react';
 import {
   Archive,
   ArrowUpRight,
@@ -102,9 +103,13 @@ function App() {
   const [showNewTicket, setShowNewTicket] = useState(false);
   const [showMobileNav, setShowMobileNav] = useState(false);
   const [assistantInput, setAssistantInput] = useState('');
-  const [assistantMessages, setAssistantMessages] = useState([
-    { from: 'bot', text: 'Hi there. I can help you find a ticket, article, or next best action.' },
-  ]);
+  const assistantRef = useRef<HTMLDivElement>(null);
+  const aiApi = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-chat`;
+  const chat = useChat({
+    api: aiApi,
+    body: { ticketId: selectedTicket?.id ?? null, mode: 'chat' },
+    headers: { Authorization: `Bearer ${session?.access_token ?? ''}` },
+  });
   const [newTicket, setNewTicket] = useState<NewTicket>({
     customer_name: '',
     customer_email: '',
@@ -263,9 +268,57 @@ function App() {
   const sendAssistantMessage = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const message = assistantInput.trim();
-    if (!message) return;
-    setAssistantMessages((current) => [...current, { from: 'user', text: message }, { from: 'bot', text: 'I found the relevant workflow: check the ticket category, confirm priority, then send an editable reply for agent approval.' }]);
+    if (!message || chat.status === 'streaming' || chat.status === 'submitted') return;
+    void chat.sendMessage({ text: message });
     setAssistantInput('');
+  };
+
+  useEffect(() => {
+    assistantRef.current?.scrollTo({ top: assistantRef.current.scrollHeight, behavior: 'smooth' });
+  }, [chat.messages]);
+
+  const [aiLoading, setAiLoading] = useState<'draft' | 'summary' | null>(null);
+
+  const runTicketAction = async (mode: 'draft' | 'summary') => {
+    if (!selectedTicket) return;
+    setAiLoading(mode);
+    try {
+      const response = await fetch(aiApi, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token ?? ''}`,
+        },
+        body: JSON.stringify({ ticketId: selectedTicket.id, mode, messages: [] }),
+      });
+      if (!response.ok || !response.body) throw new Error('failed');
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let text = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        text += decoder.decode(value, { stream: true });
+      }
+      if (mode === 'summary') {
+        await updateTicket(selectedTicket.id, { ai_summary: text.trim() });
+      } else {
+        await supabase
+          .from('ticket_messages')
+          .insert({ ticket_id: selectedTicket.id, sender_name: 'BizAssist AI', sender_type: 'ai', message: text.trim() });
+        const { data: refreshed } = await supabase
+          .from('ticket_messages')
+          .select('id, sender_name, sender_type, message, created_at')
+          .eq('ticket_id', selectedTicket.id)
+          .order('created_at', { ascending: true });
+        if (refreshed) setMessages(refreshed);
+      }
+    } catch {
+      setNotice('The AI service could not complete that request. Please try again.');
+      window.setTimeout(() => setNotice(''), 3000);
+    } finally {
+      setAiLoading(null);
+    }
   };
 
   if (authLoading) {
@@ -335,12 +388,12 @@ function App() {
               <div className="pulse-card"><div className="chart-area"><div className="chart-title"><strong>Ticket volume</strong><span>Last 7 days</span></div><div className="bars">{[42, 64, 48, 76, 58, 86, 68].map((height, index) => <div className="bar-col" key={index}><div className={`bar ${index === 5 ? 'highlight' : ''}`} style={{ height: `${height}%` }} /><span>{['M', 'T', 'W', 'T', 'F', 'S', 'S'][index]}</span></div>)}</div></div><div className="pulse-divider" /><div className="category-list"><div className="chart-title"><strong>Ticket categories</strong><span>128 total</span></div>{[['Technical', 35], ['Billing', 25], ['Account', 20], ['Other', 20]].map(([label, value]) => <div className="category-row" key={String(label)}><span>{label}</span><div><i style={{ width: `${value}%` }} /></div><b>{value}%</b></div>)}</div></div>
             </div>
 
-            <aside className="assistant-card"><div className="assistant-header"><div className="assistant-title"><div className="bot-avatar"><Sparkles size={16} /></div><div><strong>BizAssist AI</strong><span><i /> Online</span></div></div><button className="icon-button"><MoreHorizontal size={18} /></button></div><div className="assistant-intro"><span className="assistant-kicker">AI copilot</span><h3>How can I help today?</h3><p>Ask about a ticket, draft a response, or find the right help article.</p></div><div className="assistant-messages">{assistantMessages.map((message, index) => <div className={`assistant-message ${message.from}`} key={`${message.text}-${index}`}>{message.text}</div>)}</div><div className="suggested-prompts"><span>Try asking</span><button onClick={() => setAssistantInput('What should I do with high priority tickets?')}>High priority tickets</button><button onClick={() => setAssistantInput('Draft a reply for the selected ticket')}>Draft a reply</button></div><form className="assistant-input" onSubmit={sendAssistantMessage}><input value={assistantInput} onChange={(event) => setAssistantInput(event.target.value)} placeholder="Ask BizAssist..." /><button type="submit" aria-label="Send message"><Send size={16} /></button></form><p className="assistant-footnote"><Sparkles size={13} /> AI suggestions are reviewed by your team before sending.</p></aside>
+            <aside className="assistant-card"><div className="assistant-header"><div className="assistant-title"><div className="bot-avatar"><Sparkles size={16} /></div><div><strong>BizAssist AI</strong><span><i /> {chat.status === 'streaming' || chat.status === 'submitted' ? 'Thinking...' : 'Online'}</span></div></div><button className="icon-button"><MoreHorizontal size={18} /></button></div><div className="assistant-intro"><span className="assistant-kicker">AI copilot</span><h3>How can I help today?</h3><p>Ask about a ticket, draft a response, or find the right help article.</p></div><div className="assistant-messages" ref={assistantRef}>{chat.messages.length === 0 ? <div className="assistant-message bot">Hi there. I can help you find a ticket, article, or next best action.</div> : chat.messages.map((message) => <div className={`assistant-message ${message.role === 'user' ? 'user' : 'bot'}`} key={message.id}>{message.parts.map((part, index) => part.type === 'text' ? <span key={index}>{part.text}</span> : null)}</div>)}</div><div className="suggested-prompts"><span>Try asking</span><button onClick={() => setAssistantInput('What should I do with high priority tickets?')}>High priority tickets</button><button onClick={() => setAssistantInput('Draft a reply for the selected ticket')}>Draft a reply</button></div><form className="assistant-input" onSubmit={sendAssistantMessage}><input value={assistantInput} onChange={(event) => setAssistantInput(event.target.value)} placeholder="Ask BizAssist..." /><button type="submit" aria-label="Send message" disabled={chat.status === 'streaming' || chat.status === 'submitted'}><Send size={16} /></button></form><p className="assistant-footnote"><Sparkles size={13} /> AI suggestions are reviewed by your team before sending.</p></aside>
           </section>
         </div>
       </main>
 
-      {selectedTicket && <div className="drawer-backdrop" onClick={() => setSelectedTicket(null)}><aside className="ticket-drawer" onClick={(event) => event.stopPropagation()}><div className="drawer-top"><div><span className="eyebrow accent">{selectedTicket.ticket_number}</span><h2>{selectedTicket.subject}</h2></div><button className="icon-button" onClick={() => setSelectedTicket(null)} aria-label="Close ticket"><X size={19} /></button></div><div className="drawer-meta"><span className={`status ${statusClass(selectedTicket.status)}`}>{selectedTicket.status}</span><span className={`priority ${selectedTicket.priority.toLowerCase()}`}><i />{selectedTicket.priority} priority</span><span>{selectedTicket.category}</span></div><div className="drawer-actions"><label>Assigned to<select value={selectedTicket.assigned_to ?? ''} onChange={(event) => void updateTicket(selectedTicket.id, { assigned_to: event.target.value })}><option value="">Unassigned</option>{agents.map((agent) => <option key={agent}>{agent}</option>)}</select></label><label>Status<select value={selectedTicket.status} onChange={(event) => void updateTicket(selectedTicket.id, { status: event.target.value })}><option>Open</option><option>In Progress</option><option>Waiting</option><option>Resolved</option></select></label></div><div className="drawer-section"><span className="drawer-label">Customer message</span><div className="customer-message"><div className="customer-cell"><div className="mini-avatar large">{selectedTicket.customer_name.split(' ').map((name) => name[0]).join('').slice(0, 2)}</div><strong>{selectedTicket.customer_name}</strong><small>{selectedTicket.customer_email}</small></div><p>{selectedTicket.description}</p></div></div><div className="drawer-section"><span className="drawer-label">Conversation</span><div className="conversation">{messages.length ? messages.map((message) => <div className={`conversation-message ${message.sender_type}`} key={message.id}><strong>{message.sender_name}</strong><span>{message.message}</span><small>{formatTime(message.created_at)}</small></div>) : <p className="muted-cell">No messages yet.</p>}</div></div>{selectedTicket.ai_summary && <div className="ai-insight"><div><Sparkles size={16} /><strong>AI summary</strong></div><p>{selectedTicket.ai_summary}</p><button onClick={() => setAssistantInput('Draft a reply for this ticket')}>Use AI draft <ArrowUpRight size={14} /></button></div>}</aside></div>}
+      {selectedTicket && <div className="drawer-backdrop" onClick={() => setSelectedTicket(null)}><aside className="ticket-drawer" onClick={(event) => event.stopPropagation()}><div className="drawer-top"><div><span className="eyebrow accent">{selectedTicket.ticket_number}</span><h2>{selectedTicket.subject}</h2></div><button className="icon-button" onClick={() => setSelectedTicket(null)} aria-label="Close ticket"><X size={19} /></button></div><div className="drawer-meta"><span className={`status ${statusClass(selectedTicket.status)}`}>{selectedTicket.status}</span><span className={`priority ${selectedTicket.priority.toLowerCase()}`}><i />{selectedTicket.priority} priority</span><span>{selectedTicket.category}</span></div><div className="drawer-actions"><label>Assigned to<select value={selectedTicket.assigned_to ?? ''} onChange={(event) => void updateTicket(selectedTicket.id, { assigned_to: event.target.value })}><option value="">Unassigned</option>{agents.map((agent) => <option key={agent}>{agent}</option>)}</select></label><label>Status<select value={selectedTicket.status} onChange={(event) => void updateTicket(selectedTicket.id, { status: event.target.value })}><option>Open</option><option>In Progress</option><option>Waiting</option><option>Resolved</option></select></label></div><div className="ai-action-row"><button className="secondary-button" onClick={() => void runTicketAction('summary')} disabled={aiLoading !== null}>{aiLoading === 'summary' ? 'Summarizing...' : 'Summarize'} <Sparkles size={14} /></button><button className="secondary-button" onClick={() => void runTicketAction('draft')} disabled={aiLoading !== null}>{aiLoading === 'draft' ? 'Drafting...' : 'Draft reply'} <Sparkles size={14} /></button></div><div className="drawer-section"><span className="drawer-label">Customer message</span><div className="customer-message"><div className="customer-cell"><div className="mini-avatar large">{selectedTicket.customer_name.split(' ').map((name) => name[0]).join('').slice(0, 2)}</div><strong>{selectedTicket.customer_name}</strong><small>{selectedTicket.customer_email}</small></div><p>{selectedTicket.description}</p></div></div><div className="drawer-section"><span className="drawer-label">Conversation</span><div className="conversation">{messages.length ? messages.map((message) => <div className={`conversation-message ${message.sender_type}`} key={message.id}><strong>{message.sender_name}</strong><span>{message.message}</span><small>{formatTime(message.created_at)}</small></div>) : <p className="muted-cell">No messages yet.</p>}</div></div>{selectedTicket.ai_summary && <div className="ai-insight"><div><Sparkles size={16} /><strong>AI summary</strong></div><p>{selectedTicket.ai_summary}</p></div>}{selectedTicket.ai_suggested_response && <div className="ai-insight"><div><Sparkles size={16} /><strong>Suggested reply</strong></div><p>{selectedTicket.ai_suggested_response}</p></div>}</aside></div>}
 
       {showNewTicket && <div className="modal-backdrop" onClick={() => setShowNewTicket(false)}><form className="new-ticket-modal" onSubmit={createTicket} onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><span className="eyebrow accent">New request</span><h2>Create a support ticket</h2></div><button type="button" className="icon-button" onClick={() => setShowNewTicket(false)} aria-label="Close form"><X size={19} /></button></div><div className="form-grid"><label>Customer name<input required value={newTicket.customer_name} onChange={(event) => setNewTicket({ ...newTicket, customer_name: event.target.value })} placeholder="e.g. Alex Morgan" /></label><label>Email address<input required type="email" value={newTicket.customer_email} onChange={(event) => setNewTicket({ ...newTicket, customer_email: event.target.value })} placeholder="alex@example.com" /></label><label>Subject<input required value={newTicket.subject} onChange={(event) => setNewTicket({ ...newTicket, subject: event.target.value })} placeholder="What does the customer need?" /></label><label>Category<select value={newTicket.category} onChange={(event) => setNewTicket({ ...newTicket, category: event.target.value })}><option>General Inquiry</option><option>Billing</option><option>Account</option><option>Technical</option><option>Orders</option></select></label><label>Priority<select value={newTicket.priority} onChange={(event) => setNewTicket({ ...newTicket, priority: event.target.value })}><option>Low</option><option>Medium</option><option>High</option></select></label><label className="full-field">Description<textarea required rows={4} value={newTicket.description} onChange={(event) => setNewTicket({ ...newTicket, description: event.target.value })} placeholder="Describe the customer's request..." /></label></div><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setShowNewTicket(false)}>Cancel</button><button type="submit" className="primary-button"><Plus size={17} /> Create ticket</button></div></form></div>}
     </div>

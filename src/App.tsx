@@ -84,9 +84,12 @@ function statusClass(status: string) {
 function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [authMode, setAuthMode] = useState<'sign-in' | 'sign-up'>('sign-in');
+  const [authMode, setAuthMode] = useState<'sign-in' | 'sign-up' | 'forgot'>('sign-in');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showResetPassword, setShowResetPassword] = useState(false);
   const [authError, setAuthError] = useState('');
   const [authNotice, setAuthNotice] = useState('');
   const [tickets, setTickets] = useState<TicketRecord[]>([]);
@@ -119,9 +122,10 @@ function App() {
         setAuthLoading(false);
       }
     });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       setSession(nextSession);
       setAuthLoading(false);
+      if (event === 'PASSWORD_RECOVERY') setShowResetPassword(true);
     });
     return () => {
       active = false;
@@ -135,16 +139,41 @@ function App() {
     setAuthNotice('');
     const result = authMode === 'sign-in'
       ? await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword })
-      : await supabase.auth.signUp({ email: authEmail, password: authPassword });
+      : authMode === 'forgot'
+        ? await supabase.auth.resetPasswordForEmail(authEmail, { redirectTo: window.location.origin })
+        : await supabase.auth.signUp({ email: authEmail, password: authPassword });
     if (result.error) {
       setAuthError(result.error.message.includes('Invalid login credentials') ? 'That email or password is not correct.' : result.error.message);
       return;
     }
-    if (authMode === 'sign-up' && !result.data.session) {
+    if (authMode === 'forgot') {
+      setAuthNotice('If an account exists for that email, we sent a secure reset link.');
+      return;
+    }
+    if (authMode === 'sign-up' && 'session' in result.data && !result.data.session) {
       setAuthNotice('Your account was created. Check your email to confirm it, then sign in.');
       setAuthMode('sign-in');
       setAuthPassword('');
     }
+  };
+
+  const updatePassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setAuthError('');
+    setAuthNotice('');
+    if (newPassword !== confirmPassword) {
+      setAuthError('Your passwords do not match.');
+      return;
+    }
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) {
+      setAuthError('We could not update your password. Please request a new reset link.');
+      return;
+    }
+    setNewPassword('');
+    setConfirmPassword('');
+    setShowResetPassword(false);
+    setAuthNotice('Password updated. Your workspace is ready.');
   };
 
   const loadTickets = async () => {
@@ -243,11 +272,20 @@ function App() {
     return <div className="auth-loading"><div className="brand-mark"><Sparkles size={17} /></div><span>Loading secure workspace...</span></div>;
   }
 
+  if (session && showResetPassword) {
+    return (
+      <div className="auth-shell auth-reset-shell">
+        <div className="auth-visual"><div className="auth-orbit orbit-one" /><div className="auth-orbit orbit-two" /><div className="auth-visual-content"><div className="brand-row auth-brand"><div className="brand-mark"><Sparkles size={17} /></div><div><strong>BizAssist</strong><span>Customer operations</span></div></div><div className="auth-quote"><span className="eyebrow accent">Secure recovery</span><h1>A fresh start for your workspace.</h1><p>Choose a new password to get back to the support queue with confidence.</p><div className="auth-proof"><div className="proof-icon"><Check size={16} /></div><span>Your reset link is time-limited and protected</span></div></div></div></div>
+        <main className="auth-panel"><div className="auth-panel-inner"><div className="auth-mobile-brand"><div className="brand-mark"><Sparkles size={17} /></div><strong>BizAssist</strong></div><div className="auth-heading"><span className="eyebrow accent">Password recovery</span><h2>Set a new password</h2><p>Use at least 6 characters and keep it unique to this workspace.</p></div>{authError && <div className="auth-message error"><CircleHelp size={16} />{authError}</div>}<form className="auth-form" onSubmit={updatePassword}><label>New password<div className="auth-input"><span className="password-dot">•••</span><input required type="password" minLength={6} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="At least 6 characters" autoComplete="new-password" /></div></label><label>Confirm new password<div className="auth-input"><span className="password-dot">•••</span><input required type="password" minLength={6} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="Repeat your new password" autoComplete="new-password" /></div></label><button className="primary-button auth-submit" type="submit">Update password <Check size={16} /></button></form><p className="auth-privacy"><Check size={13} /> Password recovery is protected by Supabase.</p></div></main>
+      </div>
+    );
+  }
+
   if (!session) {
     return (
       <div className="auth-shell">
         <div className="auth-visual"><div className="auth-orbit orbit-one" /><div className="auth-orbit orbit-two" /><div className="auth-visual-content"><div className="brand-row auth-brand"><div className="brand-mark"><Sparkles size={17} /></div><div><strong>BizAssist</strong><span>Customer operations</span></div></div><div className="auth-quote"><span className="eyebrow accent">Support workspace</span><h1>Make every customer feel heard.</h1><p>Bring your team's conversations, context, and next best actions into one focused workspace.</p><div className="auth-proof"><div className="proof-icon"><Check size={16} /></div><span>Secure agent access powered by Supabase</span></div><div className="auth-proof"><div className="proof-icon"><Sparkles size={16} /></div><span>AI-assisted workflows with human approval</span></div></div></div></div>
-        <main className="auth-panel"><div className="auth-panel-inner"><div className="auth-mobile-brand"><div className="brand-mark"><Sparkles size={17} /></div><strong>BizAssist</strong></div><div className="auth-heading"><span className="eyebrow accent">Agent portal</span><h2>{authMode === 'sign-in' ? 'Welcome back' : 'Create your agent account'}</h2><p>{authMode === 'sign-in' ? 'Sign in to manage your support queue.' : 'Join your support workspace with your work email.'}</p></div>{authError && <div className="auth-message error"><CircleHelp size={16} />{authError}</div>}{authNotice && <div className="auth-message success"><Check size={16} />{authNotice}</div>}<form className="auth-form" onSubmit={handleAuth}><label>Email address<div className="auth-input"><UserRound size={16} /><input required type="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="you@company.com" autoComplete="email" /></div></label><label>Password<div className="auth-input"><span className="password-dot">•••</span><input required type="password" minLength={6} value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="At least 6 characters" autoComplete={authMode === 'sign-in' ? 'current-password' : 'new-password'} /></div></label><button className="primary-button auth-submit" type="submit">{authMode === 'sign-in' ? 'Sign in to workspace' : 'Create account'}<ArrowUpRight size={16} /></button></form><div className="auth-switch">{authMode === 'sign-in' ? <><span>New to BizAssist?</span><button onClick={() => { setAuthMode('sign-up'); setAuthError(''); setAuthNotice(''); }}>Create an account</button></> : <><span>Already have an account?</span><button onClick={() => { setAuthMode('sign-in'); setAuthError(''); setAuthNotice(''); }}>Sign in instead</button></>}</div><p className="auth-privacy"><Check size={13} /> Your workspace is protected with Supabase authentication.</p></div></main>
+        <main className="auth-panel"><div className="auth-panel-inner"><div className="auth-mobile-brand"><div className="brand-mark"><Sparkles size={17} /></div><strong>BizAssist</strong></div><div className="auth-heading"><span className="eyebrow accent">Agent portal</span><h2>{authMode === 'sign-in' ? 'Welcome back' : authMode === 'forgot' ? 'Reset your password' : 'Create your agent account'}</h2><p>{authMode === 'sign-in' ? 'Sign in to manage your support queue.' : authMode === 'forgot' ? 'Enter your work email and we will send a secure recovery link.' : 'Join your support workspace with your work email.'}</p></div>{authError && <div className="auth-message error"><CircleHelp size={16} />{authError}</div>}{authNotice && <div className="auth-message success"><Check size={16} />{authNotice}</div>}<form className="auth-form" onSubmit={handleAuth}><label>Email address<div className="auth-input"><UserRound size={16} /><input required type="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="you@company.com" autoComplete="email" /></div></label>{authMode !== 'forgot' && <label>Password<div className="auth-input"><span className="password-dot">•••</span><input required type="password" minLength={6} value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="At least 6 characters" autoComplete={authMode === 'sign-in' ? 'current-password' : 'new-password'} /></div></label>}<button className="primary-button auth-submit" type="submit">{authMode === 'sign-in' ? 'Sign in to workspace' : authMode === 'forgot' ? 'Send reset link' : 'Create account'}{authMode === 'forgot' ? <Send size={16} /> : <ArrowUpRight size={16} />}</button></form>{authMode === 'sign-in' && <button className="forgot-link" onClick={() => { setAuthMode('forgot'); setAuthError(''); setAuthNotice(''); }}>Forgot your password?</button>}<div className="auth-switch">{authMode === 'sign-in' ? <><span>New to BizAssist?</span><button onClick={() => { setAuthMode('sign-up'); setAuthError(''); setAuthNotice(''); }}>Create an account</button></> : <><span>{authMode === 'forgot' ? 'Remember your password?' : 'Already have an account?'}</span><button onClick={() => { setAuthMode('sign-in'); setAuthError(''); setAuthNotice(''); }}>Sign in instead</button></>}</div><p className="auth-privacy"><Check size={13} /> Your workspace is protected with Supabase authentication.</p></div></main>
       </div>
     );
   }

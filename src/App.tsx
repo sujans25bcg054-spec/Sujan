@@ -14,6 +14,8 @@ import {
   LayoutDashboard,
   Menu,
   MessageSquare,
+  Mic,
+  MicOff,
   MoreHorizontal,
   Plus,
   Search,
@@ -61,6 +63,31 @@ type NewTicket = {
   priority: string;
 };
 
+type SpeechRecognitionResultEvent = {
+  resultIndex: number;
+  results: ArrayLike<{ 0: { transcript: string }; isFinal: boolean }>;
+};
+
+type SpeechRecognitionLike = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: SpeechRecognitionResultEvent) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+declare global {
+  interface Window {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  }
+}
+
 const navItems = [
   { label: 'Overview', icon: LayoutDashboard },
   { label: 'Tickets', icon: Ticket, count: 24 },
@@ -103,7 +130,10 @@ function App() {
   const [showNewTicket, setShowNewTicket] = useState(false);
   const [showMobileNav, setShowMobileNav] = useState(false);
   const [assistantInput, setAssistantInput] = useState('');
+  const [speechSupported, setSpeechSupported] = useState(false);
+  const [isListening, setIsListening] = useState(false);
   const assistantRef = useRef<HTMLDivElement>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const aiApi = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-chat`;
   const chat = useChat({
     api: aiApi,
@@ -274,8 +304,43 @@ function App() {
   };
 
   useEffect(() => {
-    assistantRef.current?.scrollTo({ top: assistantRef.current.scrollHeight, behavior: 'smooth' });
-  }, [chat.messages]);
+    const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!Recognition) return;
+    setSpeechSupported(true);
+    const recognition = new Recognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+    recognition.onresult = (event) => {
+      const transcript = event.results[event.resultIndex]?.[0]?.transcript?.trim();
+      if (transcript) setAssistantInput((current) => current ? `${current} ${transcript}` : transcript);
+    };
+    recognition.onerror = () => {
+      setIsListening(false);
+      setNotice('Voice input could not start. Please check your microphone permission.');
+      window.setTimeout(() => setNotice(''), 3000);
+    };
+    recognition.onend = () => setIsListening(false);
+    recognitionRef.current = recognition;
+    return () => {
+      recognition.stop();
+      recognitionRef.current = null;
+    };
+  }, []);
+
+  const toggleSpeechInput = () => {
+    if (!speechSupported || !recognitionRef.current) {
+      setNotice('Voice input is not supported in this browser.');
+      window.setTimeout(() => setNotice(''), 3000);
+      return;
+    }
+    if (isListening) {
+      recognitionRef.current.stop();
+      return;
+    }
+    recognitionRef.current.start();
+    setIsListening(true);
+  };
 
   const [aiLoading, setAiLoading] = useState<'draft' | 'summary' | null>(null);
 
@@ -388,7 +453,7 @@ function App() {
               <div className="pulse-card"><div className="chart-area"><div className="chart-title"><strong>Ticket volume</strong><span>Last 7 days</span></div><div className="bars">{[42, 64, 48, 76, 58, 86, 68].map((height, index) => <div className="bar-col" key={index}><div className={`bar ${index === 5 ? 'highlight' : ''}`} style={{ height: `${height}%` }} /><span>{['M', 'T', 'W', 'T', 'F', 'S', 'S'][index]}</span></div>)}</div></div><div className="pulse-divider" /><div className="category-list"><div className="chart-title"><strong>Ticket categories</strong><span>128 total</span></div>{[['Technical', 35], ['Billing', 25], ['Account', 20], ['Other', 20]].map(([label, value]) => <div className="category-row" key={String(label)}><span>{label}</span><div><i style={{ width: `${value}%` }} /></div><b>{value}%</b></div>)}</div></div>
             </div>
 
-            <aside className="assistant-card"><div className="assistant-header"><div className="assistant-title"><div className="bot-avatar"><Sparkles size={16} /></div><div><strong>BizAssist AI</strong><span><i /> {chat.status === 'streaming' || chat.status === 'submitted' ? 'Thinking...' : 'Online'}</span></div></div><button className="icon-button"><MoreHorizontal size={18} /></button></div><div className="assistant-intro"><span className="assistant-kicker">AI copilot</span><h3>How can I help today?</h3><p>Ask about a ticket, draft a response, or find the right help article.</p></div><div className="assistant-messages" ref={assistantRef}>{chat.messages.length === 0 ? <div className="assistant-message bot">Hi there. I can help you find a ticket, article, or next best action.</div> : chat.messages.map((message) => <div className={`assistant-message ${message.role === 'user' ? 'user' : 'bot'}`} key={message.id}>{message.parts.map((part, index) => part.type === 'text' ? <span key={index}>{part.text}</span> : null)}</div>)}</div><div className="suggested-prompts"><span>Try asking</span><button onClick={() => setAssistantInput('What should I do with high priority tickets?')}>High priority tickets</button><button onClick={() => setAssistantInput('Draft a reply for the selected ticket')}>Draft a reply</button></div><form className="assistant-input" onSubmit={sendAssistantMessage}><input value={assistantInput} onChange={(event) => setAssistantInput(event.target.value)} placeholder="Ask BizAssist..." /><button type="submit" aria-label="Send message" disabled={chat.status === 'streaming' || chat.status === 'submitted'}><Send size={16} /></button></form><p className="assistant-footnote"><Sparkles size={13} /> AI suggestions are reviewed by your team before sending.</p></aside>
+            <aside className="assistant-card"><div className="assistant-header"><div className="assistant-title"><div className="bot-avatar"><Sparkles size={16} /></div><div><strong>BizAssist AI</strong><span><i /> {chat.status === 'streaming' || chat.status === 'submitted' ? 'Thinking...' : 'Online'}</span></div></div><button className="icon-button"><MoreHorizontal size={18} /></button></div><div className="assistant-intro"><span className="assistant-kicker">AI copilot</span><h3>How can I help today?</h3><p>Ask about a ticket, draft a response, or find the right help article.</p></div><div className="assistant-messages" ref={assistantRef}>{chat.messages.length === 0 ? <div className="assistant-message bot">Hi there. I can help you find a ticket, article, or next best action.</div> : chat.messages.map((message) => <div className={`assistant-message ${message.role === 'user' ? 'user' : 'bot'}`} key={message.id}>{message.parts.map((part, index) => part.type === 'text' ? <span key={index}>{part.text}</span> : null)}</div>)}</div><div className="suggested-prompts"><span>Try asking</span><button onClick={() => setAssistantInput('What should I do with high priority tickets?')}>High priority tickets</button><button onClick={() => setAssistantInput('Draft a reply for the selected ticket')}>Draft a reply</button></div><form className="assistant-input" onSubmit={sendAssistantMessage}><input value={assistantInput} onChange={(event) => setAssistantInput(event.target.value)} placeholder={isListening ? 'Listening...' : 'Ask BizAssist...'} /><button type="button" className={`assistant-mic ${isListening ? 'listening' : ''}`} onClick={toggleSpeechInput} aria-label={isListening ? 'Stop voice input' : 'Start voice input'} title={speechSupported ? 'Dictate a message' : 'Voice input is not supported in this browser'}><>{isListening ? <MicOff size={16} /> : <Mic size={16} />}</></button><button type="submit" aria-label="Send message" disabled={chat.status === 'streaming' || chat.status === 'submitted'}><Send size={16} /></button></form><p className="assistant-footnote"><Sparkles size={13} /> AI suggestions are reviewed by your team before sending.</p></aside>
           </section>
         </div>
       </main>

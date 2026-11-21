@@ -187,7 +187,19 @@ function App() {
         ? await supabase.auth.resetPasswordForEmail(authEmail, { redirectTo: window.location.origin })
         : await supabase.auth.signUp({ email: authEmail, password: authPassword });
     if (result.error) {
-      setAuthError(result.error.message.includes('Invalid login credentials') ? 'That email or password is not correct.' : result.error.message);
+      const message = result.error.message.toLowerCase();
+      if (message.includes('invalid login credentials')) {
+        setAuthError('That email or password is not correct.');
+      } else if (message.includes('user_already_exists') || message.includes('already registered')) {
+        setAuthError('An account with that email already exists. Try signing in instead.');
+        setAuthMode('sign-in');
+      } else if (message.includes('rate limit') || message.includes('too many')) {
+        setAuthError('Too many attempts. Please wait a moment and try again.');
+      } else if (message.includes('password') && message.includes('weak')) {
+        setAuthError('Please choose a stronger password (at least 6 characters).');
+      } else {
+        setAuthError(result.error.message);
+      }
       return;
     }
     if (authMode === 'forgot') {
